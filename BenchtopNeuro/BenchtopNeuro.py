@@ -1,6 +1,7 @@
 import os
 import unittest
 import numpy
+import dicom
 from __main__ import vtk, qt, ctk, slicer
 from slicer.ScriptedLoadableModule import *
 
@@ -145,18 +146,90 @@ class BenchtopNeuroLogic(ScriptedLoadableModuleLogic):
   https://github.com/Slicer/Slicer/blob/master/Base/Python/slicer/ScriptedLoadableModule.py
   """
 
-  def hasImageData(self,volumeNode):
-    """This is a dummy logic method that
-    returns true if the passed in volume
-    node has valid image data
-    """
-    if not volumeNode:
-      print('no volume node')
-      return False
-    if volumeNode.GetImageData() == None:
-      print('no image data')
-      return False
-    return True
+  def loadUltrasoundMultiframeImageStorage(self,filePath,regionIndex=0,mapToScalar=True):
+    """Implements the map of dicom US into slicer volume node (not geometrically valid)
+    TODO: move this to a DICOMPlugin"""
+
+    ds = dicom.read_file(filePath)
+    if ds.SOPClassUID != '1.2.840.10008.5.1.4.1.1.3.1':
+      print('Warning: this is not a multiframe ultrasound')
+
+    if hasattr(ds, 'SequenceOfUltrasoundRegions'):
+      regionIndex = 0
+      regionCount = len(ds.SequenceOfUltrasoundRegions)
+      if regionCount != 1:
+        print('Warning: only using first of ' + regionCount + ' regions')
+
+    if ds.PlanarConfiguration != 0:
+      print('Warning: unsupported PlanarConfiguration')
+
+    if ds.PhotometricInterpretation != 'RGB':
+      print('Warning: unsupported PhotometricInterpretation')
+
+    if ds.LossyImageCompression != '00':
+      print('Warning: Lossy compression not supported')
+
+    if ds.BitsAllocated != 8 or ds.BitsStored != 8 or ds.HighBit != 7:
+      print('Warning: Bad scalar type (not unsigned byte)')
+
+    slicer.modules.BenchtopNeuroInstance.ds = ds
+
+    image = vtk.vtkImageData()
+    slicer.modules.BenchtopNeuroInstance.image = image
+
+    if regionIndex == None:
+      columns = ds.Columns
+      rows = ds.Rows
+      originColumn = 0
+      originRow = 0
+      spacing = (1,1,1)
+    else:
+      region  = ds.SequenceOfUltrasoundRegions[regionIndex]
+      columns = region.RegionLocationMaxX1 - region.RegionLocationMinX0
+      rows    = region.RegionLocationMaxY1 - region.RegionLocationMinY0
+      originColumn = region.RegionLocationMinX0
+      originRow = region.RegionLocationMinY0
+      if region.PhysicalUnitsXDirection != 3 or region.PhysicalUnitsYDirection != 3:
+        print('Warning: US image region is not spatial (not in cm)')
+      spacing = (region.PhysicalDeltaX * 10., region.PhysicalDeltaY * 10, 1) # cm to mm
+
+    frames  = int(ds.NumberOfFrames)
+
+    if mapToScalar:
+      volumeNode = slicer.vtkMRMLScalarVolumeNode()
+      imageShape = (frames, rows, columns)
+      imageComponents = 1
+    else:
+      volumeNode = slicer.vtkMRMLVectorVolumeNode()
+      imageShape = (frames, rows, columns, ds.SamplesPerPixel)
+      imageComponents = ds.SamplesPerPixel
+
+    image.SetDimensions(columns, rows, frames)
+    image.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, imageComponents)
+    imageArray = vtk.util.numpy_support.vtk_to_numpy(image.GetPointData().GetScalars()).reshape(imageShape)
+    slicer.modules.BenchtopNeuroInstance.imageArray = imageArray
+    pixelShape = (frames, ds.Rows, ds.Columns, ds.SamplesPerPixel)
+    pixels = ds.pixel_array.reshape(pixelShape)
+
+    # extract the pixel region from each frame
+    for frame in range(frames):
+      if mapToScalar:
+        a = pixels[frame,originRow:originRow+rows,originColumn:originColumn+columns,0]
+      else:
+        a = pixels[frame,originRow:originRow+rows,originColumn:originColumn+columns]
+      aa = numpy.fliplr(a)
+      imageArray[frame] = numpy.flipud(aa)
+
+    volumeNode.SetName('Raw Ultrasound')
+    volumeNode.SetSpacing(*spacing)
+    volumeNode.SetAndObserveImageData(image)
+    slicer.mrmlScene.AddNode(volumeNode)
+    volumeNode.CreateDefaultDisplayNodes()
+
+    applicationLogic = slicer.app.applicationLogic()
+    selectionNode = applicationLogic.GetSelectionNode()
+    selectionNode.SetReferenceActiveVolumeID( volumeNode.GetID() )
+    applicationLogic.PropagateVolumeSelection(1)
 
   def takeScreenshot(self,name,description,type=-1):
     # show the message even if not taking a screen shot
@@ -232,93 +305,18 @@ class BenchtopNeuroTest(ScriptedLoadableModuleTest):
     self.test_BenchtopNeuro1()
 
   def test_BenchtopNeuro1(self):
-    """ Ideally you should have several levels of tests.  At the lowest level
-    tests sould exercise the functionality of the logic with different inputs
-    (both valid and invalid).  At higher levels your tests should emulate the
-    way the user would interact with your code and confirm that it still works
-    the way you intended.
-    One of the most important features of the tests is that it should alert other
-    developers when their changes will have an impact on the behavior of your
-    module.  For example, if a developer removes a feature that you depend on,
-    your test should break so they know that the feature is needed.
-    """
+    """Load an ultrasound cine and try to align it to the table"""
 
     self.delayDisplay("Starting the test",50)
 
-    import dicom
 
     usPath = "/Volumes/encrypted/casehub/20150118 133837-elephant.dcm"
     usPath = "/Volumes/encrypted/casehub/20150118 133126-flat-cine.dcm"
 
-    ds = dicom.read_file(usPath)
+    logic = BenchtopNeuroLogic()
+    logic.loadUltrasoundMultiframeImageStorage(usPath)
 
-    if hasattr(ds, 'SequenceOfUltrasoundRegions'):
-      regionIndex = 0
-      regionCount = len(ds.SequenceOfUltrasoundRegions)
-      if regionCount != 1:
-        print('Warning: only using first of ' + regionCount + ' regions')
 
-    if ds.PlanarConfiguration != 0:
-      print('Warning: unsupported PlanarConfiguration')
-
-    if ds.PhotometricInterpretation != 'RGB':
-      print('Warning: unsupported PhotometricInterpretation')
-
-    if ds.LossyImageCompression != '00':
-      print('Warning: Lossy compression not supported')
-
-    if ds.BitsAllocated != 8 or ds.BitsStored != 8 or ds.HighBit != 7:
-      print('Warning: Bad scalar type (not unsigned byte)')
-
-    slicer.modules.BenchtopNeuroInstance.ds = ds
-
-    image = vtk.vtkImageData()
-    slicer.modules.BenchtopNeuroInstance.image = image
-
-    if regionIndex == None:
-      columns = ds.Columns
-      rows = ds.Rows
-      originColumn = 0
-      originRow = 0
-      spacing = (1,1,1)
-    else:
-      region  = ds.SequenceOfUltrasoundRegions[regionIndex]
-      columns = region.RegionLocationMaxX1 - region.RegionLocationMinX0
-      rows    = region.RegionLocationMaxY1 - region.RegionLocationMinY0
-      originColumn = region.RegionLocationMinX0
-      originRow = region.RegionLocationMinY0
-      if region.PhysicalUnitsXDirection != 3 or region.PhysicalUnitsYDirection != 3:
-        print('Warning: US image region is not spatial (not in cm)')
-      spacing = (region.PhysicalDeltaX * 10., region.PhysicalDeltaY * 10, 1) # cm to mm
-
-    frames  = int(ds.NumberOfFrames)
-
-    image.SetDimensions(columns, rows, frames)
-    image.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, ds.SamplesPerPixel)
-    
-    imageShape = (frames, rows, columns, ds.SamplesPerPixel)
-    imageArray = vtk.util.numpy_support.vtk_to_numpy(image.GetPointData().GetScalars()).reshape(imageShape)
-    slicer.modules.BenchtopNeuroInstance.imageArray = imageArray
-    pixelShape = (frames, ds.Rows, ds.Columns, ds.SamplesPerPixel)
-    pixels = ds.pixel_array.reshape(pixelShape)
-
-    # extract the pixel region from each frame
-    for frame in range(frames):
-      a = pixels[frame,originRow:originRow+rows,originColumn:originColumn+columns]
-      aa = numpy.fliplr(a)
-      imageArray[frame] = numpy.flipud(aa)
-
-    volumeNode = slicer.vtkMRMLVectorVolumeNode()
-    volumeNode.SetName('Raw Ultrasound')
-    volumeNode.SetSpacing(*spacing)
-    volumeNode.SetAndObserveImageData(image)
-    slicer.mrmlScene.AddNode(volumeNode)
-    volumeNode.CreateDefaultDisplayNodes()
-
-    applicationLogic = slicer.app.applicationLogic()
-    selectionNode = applicationLogic.GetSelectionNode()
-    selectionNode.SetReferenceActiveVolumeID( volumeNode.GetID() )
-    applicationLogic.PropagateVolumeSelection(0)
 
     self.delayDisplay('Test passed!',50)
 
