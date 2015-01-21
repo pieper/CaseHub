@@ -261,6 +261,15 @@ class BenchtopNeuroTest(ScriptedLoadableModuleTest):
     if ds.PlanarConfiguration != 0:
       print('Warning: unsupported PlanarConfiguration')
 
+    if ds.PhotometricInterpretation != 'RGB':
+      print('Warning: unsupported PhotometricInterpretation')
+
+    if ds.LossyImageCompression != '00':
+      print('Warning: Lossy compression not supported')
+
+    if ds.BitsAllocated != 8 or ds.BitsStored != 8 or ds.HighBit != 7:
+      print('Warning: Bad scalar type (not unsigned byte)')
+
     slicer.modules.BenchtopNeuroInstance.ds = ds
 
     image = vtk.vtkImageData()
@@ -271,12 +280,16 @@ class BenchtopNeuroTest(ScriptedLoadableModuleTest):
       rows = ds.Rows
       originColumn = 0
       originRow = 0
+      spacing = (1,1,1)
     else:
       region  = ds.SequenceOfUltrasoundRegions[regionIndex]
       columns = region.RegionLocationMaxX1 - region.RegionLocationMinX0
       rows    = region.RegionLocationMaxY1 - region.RegionLocationMinY0
       originColumn = region.RegionLocationMinX0
       originRow = region.RegionLocationMinY0
+      if region.PhysicalUnitsXDirection != 3 or region.PhysicalUnitsYDirection != 3:
+        print('Warning: US image region is not spatial (not in cm)')
+      spacing = (region.PhysicalDeltaX * 10., region.PhysicalDeltaY * 10, 1) # cm to mm
 
     frames  = int(ds.NumberOfFrames)
 
@@ -297,6 +310,7 @@ class BenchtopNeuroTest(ScriptedLoadableModuleTest):
 
     volumeNode = slicer.vtkMRMLVectorVolumeNode()
     volumeNode.SetName('Raw Ultrasound')
+    volumeNode.SetSpacing(*spacing)
     volumeNode.SetAndObserveImageData(image)
     slicer.mrmlScene.AddNode(volumeNode)
     volumeNode.CreateDefaultDisplayNodes()
