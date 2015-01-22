@@ -92,15 +92,26 @@ class BenchtopNeuroWidget(ScriptedLoadableModuleWidget):
     parametersFormLayout.addRow("Enable Screenshots", self.enableScreenshotsFlagCheckBox)
 
     #
-    # scale factor for screen shots
+    # tracker frame
     #
-    self.screenshotScaleFactorSliderWidget = ctk.ctkSliderWidget()
-    self.screenshotScaleFactorSliderWidget.singleStep = 1.0
-    self.screenshotScaleFactorSliderWidget.minimum = 1.0
-    self.screenshotScaleFactorSliderWidget.maximum = 50.0
-    self.screenshotScaleFactorSliderWidget.value = 1.0
-    self.screenshotScaleFactorSliderWidget.setToolTip("Set scale factor for the screen shots.")
-    parametersFormLayout.addRow("Screenshot scale factor", self.screenshotScaleFactorSliderWidget)
+    self.trackerFrameSlider = ctk.ctkSliderWidget()
+    self.trackerFrameSlider.singleStep = 1.0
+    self.trackerFrameSlider.minimum = 1.0
+    self.trackerFrameSlider.maximum = 50.0
+    self.trackerFrameSlider.value = 1.0
+    self.trackerFrameSlider.setToolTip("Offset into the tracker list.")
+    parametersFormLayout.addRow("Tracker frame", self.trackerFrameSlider)
+
+    #
+    # US frame
+    #
+    self.ultrasoundFrameSlider = ctk.ctkSliderWidget()
+    self.ultrasoundFrameSlider.singleStep = 1.0
+    self.ultrasoundFrameSlider.minimum = 1.0
+    self.ultrasoundFrameSlider.maximum = 50.0
+    self.ultrasoundFrameSlider.value = 1.0
+    self.ultrasoundFrameSlider.setToolTip("Offset into the ultrasound list.")
+    parametersFormLayout.addRow("Ultrasound frame", self.ultrasoundFrameSlider)
 
     #
     # Apply Button
@@ -172,10 +183,8 @@ class BenchtopNeuroLogic(ScriptedLoadableModuleLogic):
     if ds.BitsAllocated != 8 or ds.BitsStored != 8 or ds.HighBit != 7:
       print('Warning: Bad scalar type (not unsigned byte)')
 
-    slicer.modules.BenchtopNeuroInstance.ds = ds
 
     image = vtk.vtkImageData()
-    slicer.modules.BenchtopNeuroInstance.image = image
 
     if regionIndex == None:
       columns = ds.Columns
@@ -207,7 +216,6 @@ class BenchtopNeuroLogic(ScriptedLoadableModuleLogic):
     image.SetDimensions(columns, rows, frames)
     image.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, imageComponents)
     imageArray = vtk.util.numpy_support.vtk_to_numpy(image.GetPointData().GetScalars()).reshape(imageShape)
-    slicer.modules.BenchtopNeuroInstance.imageArray = imageArray
     pixelShape = (frames, ds.Rows, ds.Columns, ds.SamplesPerPixel)
     pixels = ds.pixel_array.reshape(pixelShape)
 
@@ -231,45 +239,22 @@ class BenchtopNeuroLogic(ScriptedLoadableModuleLogic):
     selectionNode.SetReferenceActiveVolumeID( volumeNode.GetID() )
     applicationLogic.PropagateVolumeSelection(1)
 
-  def takeScreenshot(self,name,description,type=-1):
-    # show the message even if not taking a screen shot
-    self.delayDisplay(description)
+    return volumeNode
 
-    if self.enableScreenshots == 0:
-      return
-
-    lm = slicer.app.layoutManager()
-    # switch on the type to get the requested window
-    widget = 0
-    if type == slicer.qMRMLScreenShotDialog.FullLayout:
-      # full layout
-      widget = lm.viewport()
-    elif type == slicer.qMRMLScreenShotDialog.ThreeD:
-      # just the 3D window
-      widget = lm.threeDWidget(0).threeDView()
-    elif type == slicer.qMRMLScreenShotDialog.Red:
-      # red slice window
-      widget = lm.sliceWidget("Red")
-    elif type == slicer.qMRMLScreenShotDialog.Yellow:
-      # yellow slice window
-      widget = lm.sliceWidget("Yellow")
-    elif type == slicer.qMRMLScreenShotDialog.Green:
-      # green slice window
-      widget = lm.sliceWidget("Green")
-    else:
-      # default to using the full window
-      widget = slicer.util.mainWindow()
-      # reset the type so that the node is set correctly
-      type = slicer.qMRMLScreenShotDialog.FullLayout
-
-    # grab and convert to vtk image data
-    qpixMap = qt.QPixmap().grabWidget(widget)
-    qimage = qpixMap.toImage()
-    imageData = vtk.vtkImageData()
-    slicer.qMRMLUtils().qImageToVtkImageData(qimage,imageData)
-
-    annotationLogic = slicer.modules.annotations.logic()
-    annotationLogic.CreateSnapShot(name, description, type, self.screenshotScaleFactor, imageData)
+  def vtkMatrix4x4FromNDI(self,values):
+    """return a new matrix based on the values for the tsv file"""
+    matrix = vtk.vtkMatrix4x4()
+    if len(values) == 8 and values[0] == "OK":
+      quaternion = []
+      for index in range(4):
+        quaternion.append(float(values[1+index]))
+      upper3x3 = [[0]*3, [0]*3, [0]*3]
+      vtk.vtkMath.QuaternionToMatrix3x3(quaternion,upper3x3)
+      for row in range(3):
+        for column in range(3):
+          matrix.SetElement(row,column,upper3x3[row][column])
+        matrix.SetElement(row,3,float(values[5+row]))
+    return matrix
 
   def run(self,inputVolume,outputVolume,enableScreenshots=0,screenshotScaleFactor=1):
     """
@@ -311,10 +296,30 @@ class BenchtopNeuroTest(ScriptedLoadableModuleTest):
 
 
     usPath = "/Volumes/encrypted/casehub/20150118 133837-elephant.dcm"
+
     usPath = "/Volumes/encrypted/casehub/20150118 133126-flat-cine.dcm"
+    trackerPath = "/Volumes/encrypted/casehub/flat-bottom.tsv"
 
     logic = BenchtopNeuroLogic()
-    logic.loadUltrasoundMultiframeImageStorage(usPath)
+
+    matrices = { "probe" : [], "transducer" : [] }
+    objectOffsets = ( ('probe', 4), ('transducer', 17) )
+
+    tsvfp = open(trackerPath,'r')
+    line = tsvfp.readline() # fixed headers
+    line = tsvfp.readline() # first row
+    while line != "":
+      line = tsvfp.readline()
+      values = line.split('\t')
+      for (object,offset) in objectOffsets:
+        matrices[object].append(logic.vtkMatrix4x4FromNDI(values[offset:offset+8]))
+      if len(matrices['probe']) > 5:
+        pass
+    tsvfp.close()
+
+    slicer.modules.BenchtopNeuroInstance.matrices = matrices
+
+    volumeNode = logic.loadUltrasoundMultiframeImageStorage(usPath)
 
 
 
