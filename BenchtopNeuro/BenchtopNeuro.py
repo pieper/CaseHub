@@ -139,16 +139,16 @@ class BenchtopNeuroLogic(ScriptedLoadableModuleLogic):
     self.imageModel = None # image plane with texture
     self.benchModel = None # bench plane
     self.benchIntersections = None # model node - estimated lines of intersection of image with bench
-    self.benchToTracker = None # transform
-    self.trackerToImage = None # transform
-    self.imageToTransducer = None # transform
+    self.benchToStar = None # comes from file
+    self.starToImage = None # transform need to estimate
+    self.imageToTransducer = None # for visualization only
 
     # helpers
     self.frameImageAlgorithm = vtk.vtkImageChangeInformation() # dummy needed for vtk
     self.frameImageAlgorithm.SetInputData(self.frameImage)
 
   def selectMatrixFrame(self,frameIndex):
-    self.benchToTracker.SetMatrixTransformToParent(self.matrices['transducer'][frameIndex])
+    self.benchToStar.SetMatrixTransformToParent(self.matrices['transducer'][frameIndex])
 
   def selectFrame(self,frameIndex):
     frameArray = self.frames[frameIndex] # TODO
@@ -180,15 +180,15 @@ class BenchtopNeuroLogic(ScriptedLoadableModuleLogic):
     slicer.mrmlScene.AddNode(self.imageModel)
 
     # Create image transform node
-    self.benchToTracker = slicer.vtkMRMLLinearTransformNode()
-    self.benchToTracker.SetName(slicer.mrmlScene.GenerateUniqueName("BenchToTracker"))
-    slicer.mrmlScene.AddNode(self.benchToTracker)
+    self.benchToStar = slicer.vtkMRMLLinearTransformNode()
+    self.benchToStar.SetName(slicer.mrmlScene.GenerateUniqueName("BenchToStar"))
+    slicer.mrmlScene.AddNode(self.benchToStar)
 
-    self.trackerToImage = slicer.vtkMRMLLinearTransformNode()
-    self.trackerToImage.SetName(slicer.mrmlScene.GenerateUniqueName("TrackerToImage"))
-    self.trackerToImage.SetAndObserveTransformNodeID(self.benchToTracker.GetID())
-    slicer.mrmlScene.AddNode(self.trackerToImage)
-    self.imageModel.SetAndObserveTransformNodeID(self.trackerToImage.GetID())
+    self.starToImage = slicer.vtkMRMLLinearTransformNode()
+    self.starToImage.SetName(slicer.mrmlScene.GenerateUniqueName("StarToImage"))
+    self.starToImage.SetAndObserveTransformNodeID(self.benchToStar.GetID())
+    slicer.mrmlScene.AddNode(self.starToImage)
+    self.imageModel.SetAndObserveTransformNodeID(self.starToImage.GetID())
 
     # Create transducer model
     modulePath = os.path.dirname(slicer.modules.benchtopneuro.path)
@@ -203,9 +203,27 @@ class BenchtopNeuroLogic(ScriptedLoadableModuleLogic):
     self.imageToTransducer = slicer.vtkMRMLLinearTransformNode()
     self.imageToTransducer.SetName(slicer.mrmlScene.GenerateUniqueName("ImageToTransducer"))
     slicer.mrmlScene.AddNode(self.imageToTransducer)
+    self.imageToTransducer.SetAndObserveTransformNodeID(self.starToImage.GetID())
     self.transducerModel.SetAndObserveTransformNodeID(self.imageToTransducer.GetID())
-    self.imageToTransducer.SetAndObserveTransformNodeID(self.trackerToImage.GetID())
 
+    # initial guess transforms
+
+    guessMatrix = vtk.vtkMatrix4x4()
+    imageToTransducerGuess = [[0.994676, 0.0308639, -0.098323, -33.6892],
+             [-0.0961992, -0.064059, -0.993299, 21.2541],
+             [-0.0369555, 0.997469, -0.0607489, -137.438]]
+    for row in xrange(3):
+      for column in xrange(4):
+        guessMatrix.SetElement(row, column,  imageToTransducerGuess[row][column])
+    self.imageToTransducer.SetMatrixTransformToParent(guessMatrix)
+
+    starToImageGuess = [[-0.634028, -0.00780088, -0.773271, 802.146],
+                        [-0.0968532, 0.992877, 0.0693964, 579.003],
+                        [0.767221, 0.118892, -0.630267, 187.916]]
+    for row in xrange(3):
+      for column in xrange(4):
+        guessMatrix.SetElement(row, column,  starToImageGuess[row][column])
+    self.starToImage.SetMatrixTransformToParent(guessMatrix)
 
   def createTrackerPaths(self):
     # TODO
