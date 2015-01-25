@@ -52,53 +52,13 @@ class BenchtopNeuroWidget(ScriptedLoadableModuleWidget):
     parametersFormLayout = qt.QFormLayout(parametersCollapsibleButton)
 
     #
-    # input volume selector
-    #
-    self.inputSelector = slicer.qMRMLNodeComboBox()
-    self.inputSelector.nodeTypes = ( ("vtkMRMLScalarVolumeNode"), "" )
-    self.inputSelector.addAttribute( "vtkMRMLScalarVolumeNode", "LabelMap", 0 )
-    self.inputSelector.selectNodeUponCreation = True
-    self.inputSelector.addEnabled = False
-    self.inputSelector.removeEnabled = False
-    self.inputSelector.noneEnabled = False
-    self.inputSelector.showHidden = False
-    self.inputSelector.showChildNodeTypes = False
-    self.inputSelector.setMRMLScene( slicer.mrmlScene )
-    self.inputSelector.setToolTip( "Pick the input to the algorithm." )
-    parametersFormLayout.addRow("Input Volume: ", self.inputSelector)
-
-    #
-    # output volume selector
-    #
-    self.outputSelector = slicer.qMRMLNodeComboBox()
-    self.outputSelector.nodeTypes = ( ("vtkMRMLScalarVolumeNode"), "" )
-    self.outputSelector.addAttribute( "vtkMRMLScalarVolumeNode", "LabelMap", 0 )
-    self.outputSelector.selectNodeUponCreation = False
-    self.outputSelector.addEnabled = True
-    self.outputSelector.removeEnabled = True
-    self.outputSelector.noneEnabled = False
-    self.outputSelector.showHidden = False
-    self.outputSelector.showChildNodeTypes = False
-    self.outputSelector.setMRMLScene( slicer.mrmlScene )
-    self.outputSelector.setToolTip( "Pick the output to the algorithm." )
-    parametersFormLayout.addRow("Output Volume: ", self.outputSelector)
-
-    #
-    # check box to trigger taking screen shots for later use in tutorials
-    #
-    self.enableScreenshotsFlagCheckBox = qt.QCheckBox()
-    self.enableScreenshotsFlagCheckBox.checked = 0
-    self.enableScreenshotsFlagCheckBox.setToolTip("If checked, take screen shots for tutorials. Use Save Data to write them to disk.")
-    parametersFormLayout.addRow("Enable Screenshots", self.enableScreenshotsFlagCheckBox)
-
-    #
     # tracker frame
     #
     self.trackerFrameSlider = ctk.ctkSliderWidget()
-    self.trackerFrameSlider.singleStep = 1.0
-    self.trackerFrameSlider.minimum = 1.0
-    self.trackerFrameSlider.maximum = 50.0
-    self.trackerFrameSlider.value = 1.0
+    self.trackerFrameSlider.singleStep = 1
+    self.trackerFrameSlider.minimum = 0
+    self.trackerFrameSlider.maximum = 0
+    self.trackerFrameSlider.value = 0
     self.trackerFrameSlider.setToolTip("Offset into the tracker list.")
     parametersFormLayout.addRow("Tracker frame", self.trackerFrameSlider)
 
@@ -106,41 +66,36 @@ class BenchtopNeuroWidget(ScriptedLoadableModuleWidget):
     # US frame
     #
     self.ultrasoundFrameSlider = ctk.ctkSliderWidget()
-    self.ultrasoundFrameSlider.singleStep = 1.0
-    self.ultrasoundFrameSlider.minimum = 1.0
-    self.ultrasoundFrameSlider.maximum = 50.0
-    self.ultrasoundFrameSlider.value = 1.0
+    self.ultrasoundFrameSlider.singleStep = 1
+    self.ultrasoundFrameSlider.minimum = 0
+    self.ultrasoundFrameSlider.maximum = 0
+    self.ultrasoundFrameSlider.value = 0
     self.ultrasoundFrameSlider.setToolTip("Offset into the ultrasound list.")
     parametersFormLayout.addRow("Ultrasound frame", self.ultrasoundFrameSlider)
 
-    #
-    # Apply Button
-    #
-    self.applyButton = qt.QPushButton("Apply")
-    self.applyButton.toolTip = "Run the algorithm."
-    self.applyButton.enabled = False
-    parametersFormLayout.addRow(self.applyButton)
 
     # connections
-    self.applyButton.connect('clicked(bool)', self.onApplyButton)
-    self.inputSelector.connect("currentNodeChanged(vtkMRMLNode*)", self.onSelect)
-    self.outputSelector.connect("currentNodeChanged(vtkMRMLNode*)", self.onSelect)
+    #self.inputSelector.connect("currentNodeChanged(vtkMRMLNode*)", self.onSelect)
+    #self.outputSelector.connect("currentNodeChanged(vtkMRMLNode*)", self.onSelect)
+    self.trackerFrameSlider.connect('valueChanged(double)', self.updateLogicFromGUI)
+    self.ultrasoundFrameSlider.connect('valueChanged(double)', self.updateLogicFromGUI)
+
+    # create a logic
+    self.logic = BenchtopNeuroLogic()
 
     # Add vertical spacer
     self.layout.addStretch(1)
 
+  def updateGUIFromLogic(self):
+    self.trackerFrameSlider.maximum = len(self.logic.matrixTimes)-1
+    self.ultrasoundFrameSlider.maximum = len(self.logic.frameTimes)-1
+
+  def updateLogicFromGUI(self):
+    self.logic.selectMatrixFrame(int(self.trackerFrameSlider.value))
+    self.logic.selectFrame(int(self.ultrasoundFrameSlider.value))
+
   def cleanup(self):
     pass
-
-  def onSelect(self):
-    self.applyButton.enabled = self.inputSelector.currentNode() and self.outputSelector.currentNode()
-
-  def onApplyButton(self):
-    logic = BenchtopNeuroLogic()
-    enableScreenshotsFlag = self.enableScreenshotsFlagCheckBox.checked
-    screenshotScaleFactor = int(self.screenshotScaleFactorSliderWidget.value)
-    print("Run the algorithm")
-    logic.run(self.inputSelector.currentNode(), self.outputSelector.currentNode(), enableScreenshotsFlag,screenshotScaleFactor)
 
 
 #
@@ -157,9 +112,156 @@ class BenchtopNeuroLogic(ScriptedLoadableModuleLogic):
   https://github.com/Slicer/Slicer/blob/master/Base/Python/slicer/ScriptedLoadableModule.py
   """
 
+  def __init__(self):
+    """Handles the experiment data and performs the calibration procedure
+
+        The contents of the matrices dictionary is:
+        * "transducer" which is the tracking frame rigidly attached to the transducer in tracker frame of reference
+        * "transducerToFrame" calculated transform to image space
+        * "stylus" tip of tracked blunt stylus in tracker FoR
+        * "trackerToBench" location of the tracker with respect to the bench
+
+        For convenience, the IS = 0 plane is the top of the bench. and RAS = 0,0,0 is the center of the bench.
+        The elephantom is ideally placed roughly at 0,0,0 with feet on bottom of bucket and trunk pointed toward
+        operator (so RAS is aligned with bench space).
+    """
+
+    # time sampled data
+    self.frames = [] # numpy array of ultrasound data
+    self.frameTimes = [] # numpy array frame times (matches frames)
+    self.frameImage = vtk.vtkImageData() # current image
+    self.frameImagePlane = vtk.vtkPlaneSource() # image plane geometry (based on dicom)
+    self.matrices = {} # dictionary of lists of vtkMatrix4x4
+    self.matrixTimes = {} # estimated mapping of matrices to the time base of frameTimes
+
+    # slicer nodes
+    self.transducerModel = None # slicer model node
+    self.imageModel = None # image plane with texture
+    self.benchModel = None # bench plane
+    self.benchIntersections = None # model node - estimated lines of intersection of image with bench
+    self.benchToTracker = None # transform
+    self.trackerToImage = None # transform
+    self.imageToTransducer = None # transform
+
+    # helpers
+    self.frameImageAlgorithm = vtk.vtkImageChangeInformation() # dummy needed for vtk
+    self.frameImageAlgorithm.SetInputData(self.frameImage)
+
+  def selectMatrixFrame(self,frameIndex):
+    self.benchToTracker.SetMatrixTransformToParent(self.matrices['transducer'][frameIndex])
+
+  def selectFrame(self,frameIndex):
+    frameArray = self.frames[frameIndex] # TODO
+    imageScalars = self.frameImage.GetPointData().GetScalars()
+    imageShape = frameArray.shape
+    imageArray = vtk.util.numpy_support.vtk_to_numpy(imageScalars).reshape(imageShape)
+    imageArray[:] = frameArray
+    imageScalars.Modified()
+    self.frameImage.Modified()
+
+  def createImageAndTransducer(self):
+
+    # Create image model node
+    self.imageModel = slicer.vtkMRMLModelNode()
+    self.imageModel.SetScene(slicer.mrmlScene)
+    self.imageModel.SetName(slicer.mrmlScene.GenerateUniqueName("ImagePlane"))
+    self.imageModel.SetPolyDataConnection(self.frameImagePlane.GetOutputPort())
+
+    # Create image display node
+    cursorModelDisplay = slicer.vtkMRMLModelDisplayNode()
+    cursorModelDisplay.SetColor(0,0,0) # black
+    cursorModelDisplay.SetBackfaceCulling(0) # see both sides
+    cursorModelDisplay.SetTextureImageDataConnection(self.frameImageAlgorithm.GetOutputPort())
+    cursorModelDisplay.SetScene(slicer.mrmlScene)
+    slicer.mrmlScene.AddNode(cursorModelDisplay)
+    self.imageModel.SetAndObserveDisplayNodeID(cursorModelDisplay.GetID())
+
+    # Add to slicer.mrmlScene
+    slicer.mrmlScene.AddNode(self.imageModel)
+
+    # Create image transform node
+    self.benchToTracker = slicer.vtkMRMLLinearTransformNode()
+    self.benchToTracker.SetName(slicer.mrmlScene.GenerateUniqueName("BenchToTracker"))
+    slicer.mrmlScene.AddNode(self.benchToTracker)
+
+    self.trackerToImage = slicer.vtkMRMLLinearTransformNode()
+    self.trackerToImage.SetName(slicer.mrmlScene.GenerateUniqueName("TrackerToImage"))
+    self.trackerToImage.SetAndObserveTransformNodeID(self.benchToTracker.GetID())
+    slicer.mrmlScene.AddNode(self.trackerToImage)
+    self.imageModel.SetAndObserveTransformNodeID(self.trackerToImage.GetID())
+
+    # Create transducer model
+    modulePath = os.path.dirname(slicer.modules.benchtopneuro.path)
+    transducerPath = os.path.join(modulePath, "Resources/telemed-L12-5L40S-3.vtk")
+    success,self.transducerModel = slicer.util.loadModel(transducerPath, True)
+
+    if not success:
+      print('Could not load transducer model')
+      return
+
+    # Create transducer transform
+    self.imageToTransducer = slicer.vtkMRMLLinearTransformNode()
+    self.imageToTransducer.SetName(slicer.mrmlScene.GenerateUniqueName("ImageToTransducer"))
+    slicer.mrmlScene.AddNode(self.imageToTransducer)
+    self.transducerModel.SetAndObserveTransformNodeID(self.imageToTransducer.GetID())
+    self.imageToTransducer.SetAndObserveTransformNodeID(self.trackerToImage.GetID())
+
+
+  def createTrackerPaths(self):
+    # TODO
+    # Camera cursor
+    sphere = vtk.vtkSphereSource()
+    sphere.SetRadius(10)
+    sphere.Update()
+
+    # Create model node
+    cursor = slicer.vtkMRMLModelNode()
+    cursor.SetScene(slicer.mrmlScene)
+    cursor.SetName(slicer.mrmlScene.GenerateUniqueName("Transducer"))
+    cursor.SetPolyDataConnection(sphere.GetOutputPort())
+
+    # Create display node
+    cursorModelDisplay = slicer.vtkMRMLModelDisplayNode()
+    cursorModelDisplay.SetColor(1,0,0) # red
+    cursorModelDisplay.SetScene(slicer.mrmlScene)
+    slicer.mrmlScene.AddNode(cursorModelDisplay)
+    cursor.SetAndObserveDisplayNodeID(cursorModelDisplay.GetID())
+
+    # Add to slicer.mrmlScene
+    slicer.mrmlScene.AddNode(cursor)
+
+    # Create transform node
+    transform = slicer.vtkMRMLLinearTransformNode()
+    transform.SetName(slicer.mrmlScene.GenerateUniqueName("Transducer"))
+    slicer.mrmlScene.AddNode(transform)
+    cursor.SetAndObserveTransformNodeID(transform.GetID())
+
+    self.transform = transform
+
+  def loadMatrices(self, trackerPath):
+
+    matrices = { "stylus" : [], "transducer" : [] }
+    objectOffsets = ( ('stylus', 4), ('transducer', 17) )
+
+    tsvfp = open(trackerPath,'r')
+    line = tsvfp.readline() # fixed headers
+    line = tsvfp.readline() # first row
+    while line != "":
+      line = tsvfp.readline()
+      values = line.split('\t')
+      for (object,offset) in objectOffsets:
+        matrices[object].append(self.vtkMatrix4x4FromNDI(values[offset:offset+8]))
+      if len(matrices['stylus']) > 5:
+        pass
+    tsvfp.close()
+
+    self.matrices = matrices
+    self.matrixTimes = [0,]*len(matrices['stylus'])
+
   def loadUltrasoundMultiframeImageStorage(self,filePath,regionIndex=0,mapToScalar=True):
     """Implements the map of dicom US into slicer volume node (not geometrically valid)
-    TODO: move this to a DICOMPlugin"""
+    TODO: move this to a DICOMPlugin but only if it creates a valid slicer Volume (which it typically won't)
+    """
 
     ds = dicom.read_file(filePath)
     if ds.SOPClassUID != '1.2.840.10008.5.1.4.1.1.3.1':
@@ -182,7 +284,6 @@ class BenchtopNeuroLogic(ScriptedLoadableModuleLogic):
 
     if ds.BitsAllocated != 8 or ds.BitsStored != 8 or ds.HighBit != 7:
       print('Warning: Bad scalar type (not unsigned byte)')
-
 
     image = vtk.vtkImageData()
 
@@ -239,6 +340,20 @@ class BenchtopNeuroLogic(ScriptedLoadableModuleLogic):
     selectionNode.SetReferenceActiveVolumeID( volumeNode.GetID() )
     applicationLogic.PropagateVolumeSelection(1)
 
+    # configure logic member variables for later use in callbacks
+    # TODO: may get rid of volumeNode eventually
+    self.frames = imageArray # save this for putting in texture
+    self.frameImage.SetDimensions(columns, rows, 1)
+    self.frameImage.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, imageComponents)
+    self.frameImagePlane.SetOrigin(0,0,0)
+    self.frameImagePlane.SetPoint1(columns * spacing[0], 0, 0)
+    self.frameImagePlane.SetPoint2(0, rows * spacing[1], 0)
+    self.frameImagePlane.Update()
+
+    self.frameTimes = numpy.array(ds.FrameTimeVector)
+
+    slicer.modules.BenchtopNeuroWidget.ds = ds
+
     return volumeNode
 
   def vtkMatrix4x4FromNDI(self,values):
@@ -256,20 +371,6 @@ class BenchtopNeuroLogic(ScriptedLoadableModuleLogic):
         matrix.SetElement(row,3,float(values[5+row]))
     return matrix
 
-  def run(self,inputVolume,outputVolume,enableScreenshots=0,screenshotScaleFactor=1):
-    """
-    Run the actual algorithm
-    """
-
-    self.delayDisplay('Running the aglorithm')
-
-    self.enableScreenshots = enableScreenshots
-    self.screenshotScaleFactor = screenshotScaleFactor
-
-    self.takeScreenshot('BenchtopNeuro-Start','Start',-1)
-
-    return True
-
 
 class BenchtopNeuroTest(ScriptedLoadableModuleTest):
   """
@@ -281,6 +382,8 @@ class BenchtopNeuroTest(ScriptedLoadableModuleTest):
   def setUp(self):
     """ Do whatever is needed to reset the state - typically a scene clear will be enough.
     """
+    mainWindow = slicer.util.mainWindow()
+    mainWindow.moduleSelector().selectModule('BenchtopNeuro')
     slicer.mrmlScene.Clear(0)
 
   def runTest(self):
@@ -294,69 +397,21 @@ class BenchtopNeuroTest(ScriptedLoadableModuleTest):
 
     self.delayDisplay("Starting the test",50)
 
-
     usPath = "/Volumes/encrypted/casehub/20150118 133837-elephant.dcm"
-
     usPath = "/Volumes/encrypted/casehub/20150118 133126-flat-cine.dcm"
     trackerPath = "/Volumes/encrypted/casehub/flat-bottom.tsv"
 
-    logic = BenchtopNeuroLogic()
+    benchtopNeuroWidget = slicer.modules.BenchtopNeuroWidget
+    logic = benchtopNeuroWidget.logic
 
-    matrices = { "probe" : [], "transducer" : [] }
-    objectOffsets = ( ('probe', 4), ('transducer', 17) )
+    logic.createImageAndTransducer()
 
-    tsvfp = open(trackerPath,'r')
-    line = tsvfp.readline() # fixed headers
-    line = tsvfp.readline() # first row
-    while line != "":
-      line = tsvfp.readline()
-      values = line.split('\t')
-      for (object,offset) in objectOffsets:
-        matrices[object].append(logic.vtkMatrix4x4FromNDI(values[offset:offset+8]))
-      if len(matrices['probe']) > 5:
-        pass
-    tsvfp.close()
+    logic.loadMatrices(trackerPath)
 
-    slicer.modules.BenchtopNeuroInstance.matrices = matrices
+    logic.loadUltrasoundMultiframeImageStorage(usPath)
 
-    volumeNode = logic.loadUltrasoundMultiframeImageStorage(usPath)
-
+    benchtopNeuroWidget.updateGUIFromLogic()
+    benchtopNeuroWidget.updateLogicFromGUI()
 
 
     self.delayDisplay('Test passed!',50)
-
-  def test_BenchtopNeuro2(self):
-    """ Ideally you should have several levels of tests.  At the lowest level
-    tests sould exercise the functionality of the logic with different inputs
-    (both valid and invalid).  At higher levels your tests should emulate the
-    way the user would interact with your code and confirm that it still works
-    the way you intended.
-    One of the most important features of the tests is that it should alert other
-    developers when their changes will have an impact on the behavior of your
-    module.  For example, if a developer removes a feature that you depend on,
-    your test should break so they know that the feature is needed.
-    """
-
-    self.delayDisplay("Starting the test")
-    #
-    # first, get some data
-    #
-    import urllib
-    downloads = (
-        ('http://slicer.kitware.com/midas3/download?items=5767', 'FA.nrrd', slicer.util.loadVolume),
-        )
-
-    for url,name,loader in downloads:
-      filePath = slicer.app.temporaryPath + '/' + name
-      if not os.path.exists(filePath) or os.stat(filePath).st_size == 0:
-        print('Requesting download %s from %s...\n' % (name, url))
-        urllib.urlretrieve(url, filePath)
-      if loader:
-        print('Loading %s...\n' % (name,))
-        loader(filePath)
-    self.delayDisplay('Finished with download and loading\n')
-
-    volumeNode = slicer.util.getNode(pattern="FA")
-    logic = BenchtopNeuroLogic()
-    self.assertTrue( logic.hasImageData(volumeNode) )
-    self.delayDisplay('Test passed!')
