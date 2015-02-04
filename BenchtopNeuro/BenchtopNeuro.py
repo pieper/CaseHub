@@ -374,21 +374,72 @@ class BenchtopNeuroLogic(ScriptedLoadableModuleLogic):
 
     return volumeNode
 
-  def vtkMatrix4x4FromNDI(self,values):
+  def vtkMatrix4x4FromNDI(self,values,method="NDICAPI"):
     """return a new matrix based on the values for the tsv file"""
-    matrix = vtk.vtkMatrix4x4()
+    matrix4x4 = vtk.vtkMatrix4x4()
     if len(values) == 8 and values[0] == "OK":
-      quaternion = []
-      for index in range(4):
-        quaternion.append(float(values[1+index]))
-      upper3x3 = [[0]*3, [0]*3, [0]*3]
-      vtk.vtkMath.QuaternionToMatrix3x3(quaternion,upper3x3)
-      for row in range(3):
-        for column in range(3):
-          matrix.SetElement(row,column,upper3x3[row][column])
-        matrix.SetElement(row,3,float(values[5+row]))
-    return matrix
+      if method == "NDICAPI":
+        self.ndiTransformToMatrixd(values, matrix4x4)
+      elif method == "VTKMATH":
+        quaternion = []
+        for index in range(4):
+          quaternion.append(float(values[1+index]))
+        upper3x3 = [[0]*3, [0]*3, [0]*3]
+        vtk.vtkMath.QuaternionToMatrix3x3(quaternion,upper3x3)
+        for row in range(3):
+          for column in range(3):
+            matrix4x4.SetElement(row,column,upper3x3[row][column])
+          matrix4x4.SetElement(row,3,float(values[5+row]))
+      else:
+        print('vtkMatrix4x4FromNDI: unknown mode')
+    return matrix4x4
 
+  def ndiTransformToMatrixd(self, values, matrix4x4):
+    """ adapted from C code
+    https://www.assembla.com/code/plus/subversion/nodes/3929/trunk/PlusLib/src/Utilities/ndicapi/ndicapi_math.c#ln122
+    """
+    # /* Determine some calculations done more than once. */
+    trans = [float(v) for v in values[1:]]
+    matrix = [0,]*16
+    ww = trans[0] * trans[0];
+    xx = trans[1] * trans[1];
+    yy = trans[2] * trans[2];
+    zz = trans[3] * trans[3];
+    wx = trans[0] * trans[1];
+    wy = trans[0] * trans[2];
+    wz = trans[0] * trans[3];
+    xy = trans[1] * trans[2];
+    xz = trans[1] * trans[3];
+    yz = trans[2] * trans[3];
+
+    rr = xx + yy + zz;
+    ss = (ww - rr)*0.5;
+    # /* Normalization factor */
+    f = 2.0/(ww + rr);
+
+    # /* Fill in the matrix. */
+    matrix[0]  = ( ss + xx)*f;
+    matrix[1]  = ( wz + xy)*f;
+    matrix[2]  = (-wy + xz)*f;
+    matrix[3]  = 0;
+    matrix[4]  = (-wz + xy)*f;
+    matrix[5]  = ( ss + yy)*f;
+    matrix[6]  = ( wx + yz)*f;
+    matrix[7]  = 0;
+    matrix[8]  = ( wy + xz)*f;
+    matrix[9]  = (-wx + yz)*f;
+    matrix[10] = ( ss + zz)*f;
+    matrix[11] = 0;
+    matrix[12] = trans[4];
+    matrix[13] = trans[5];
+    matrix[14] = trans[6];
+    matrix[15] = 1;
+    # end of C code
+
+    # transpose because ndicapi_math creates column major matrix
+    for row in range(4):
+      for column in range(4):
+        matrix4x4.SetElement(row,column, matrix[column*4 + row])
 
 class BenchtopNeuroTest(ScriptedLoadableModuleTest):
   """
@@ -415,8 +466,8 @@ class BenchtopNeuroTest(ScriptedLoadableModuleTest):
 
     self.delayDisplay("Starting the test",50)
 
-    usPath = "/Volumes/encrypted/casehub/20150118 133837-elephant.dcm"
     usPath = "/Volumes/encrypted/casehub/20150118 133126-flat-cine.dcm"
+    usPath = "/Volumes/encrypted/casehub/20150118 133837-elephant.dcm"
     trackerPath = "/Volumes/encrypted/casehub/flat-bottom.tsv"
 
     benchtopNeuroWidget = slicer.modules.BenchtopNeuroWidget
