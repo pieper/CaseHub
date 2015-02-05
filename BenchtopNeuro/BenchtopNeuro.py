@@ -466,9 +466,11 @@ class BenchtopNeuroTest(ScriptedLoadableModuleTest):
 
     self.delayDisplay("Starting the test",50)
 
-    usPath = "/Volumes/encrypted/casehub/20150118 133126-flat-cine.dcm"
-    usPath = "/Volumes/encrypted/casehub/20150118 133837-elephant.dcm"
-    trackerPath = "/Volumes/encrypted/casehub/flat-bottom.tsv"
+    dataDir = "/Volumes/encrypted/casehub"
+    dataDir = "/Users/pieper/casehub"
+    usPath = os.path.join(dataDir, "20150118 133126-flat-cine.dcm")
+    usPath = os.path.join(dataDir, "20150118 133837-elephant.dcm")
+    trackerPath = os.path.join(dataDir, "flat-bottom.tsv")
 
     benchtopNeuroWidget = slicer.modules.BenchtopNeuroWidget
     logic = benchtopNeuroWidget.logic
