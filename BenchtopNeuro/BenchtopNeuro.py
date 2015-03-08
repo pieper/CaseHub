@@ -374,6 +374,56 @@ class BenchtopNeuroLogic(ScriptedLoadableModuleLogic):
 
     return volumeNode
 
+  def loadVolumeGraphicsFile(self,vgiPath):
+    """Implements a vgi/vol reader
+    TODO: move this to a scripted IO for slicer if there's any real demand for it.
+    """
+    # load the vtk file, which is in .ini format
+    # and extract info about vol file
+    vgi = qt.QSettings(vgiPath, qt.QSettings.IniFormat)
+    volName = vgi.value('file1/Name')
+    volPath = os.path.join(os.path.dirname(vgiPath), volName)
+
+    # read the vol file into a numpy array
+    dataType = vgi.value('file1/Datatype')
+    if dataType != "float":
+      print("Warning: non-float volume data")
+    volArray = numpy.fromfile(volPath,dtype=numpy.dtype('float32'))
+    dimensions = map(int, vgi.value('file1/Size').split())
+    shape = list(dimensions)
+    shape.reverse()
+    resolution = vgi.value('geometry/resolution').split()
+    spacing = map(float, resolution)
+    if vgi.value('geometry/scale') != "1 1 1":
+      print("Warning: non unit scale")
+    if vgi.value('geometry/unit') != "mm":
+      print("Warning: non mm units")
+
+    volArray = volArray.reshape(shape)
+
+    # make a vtkImage data of the vol data
+    image = vtk.vtkImageData()
+    image.SetDimensions(dimensions)
+    image.AllocateScalars(vtk.VTK_FLOAT, 1)
+    imageArray = vtk.util.numpy_support.vtk_to_numpy(image.GetPointData().GetScalars()).reshape(shape)
+    imageArray[:] = volArray
+
+    # make a slicer volume node for the image
+    volumeNode = slicer.vtkMRMLScalarVolumeNode()
+    volumeNode.SetName(volName)
+    volumeNode.SetSpacing(*spacing)
+    volumeNode.SetAndObserveImageData(image)
+    slicer.mrmlScene.AddNode(volumeNode)
+    volumeNode.CreateDefaultDisplayNodes()
+
+    # make this volume visible
+    applicationLogic = slicer.app.applicationLogic()
+    selectionNode = applicationLogic.GetSelectionNode()
+    selectionNode.SetReferenceActiveVolumeID( volumeNode.GetID() )
+    applicationLogic.PropagateVolumeSelection(1)
+
+    return volumeNode
+
   def vtkMatrix4x4FromNDI(self,values,method="NDICAPI"):
     """return a new matrix based on the values for the tsv file"""
     matrix4x4 = vtk.vtkMatrix4x4()
@@ -466,14 +516,22 @@ class BenchtopNeuroTest(ScriptedLoadableModuleTest):
 
     self.delayDisplay("Starting the test",50)
 
-    dataDir = "/Volumes/encrypted/casehub"
+    benchtopNeuroWidget = slicer.modules.BenchtopNeuroWidget
+    logic = benchtopNeuroWidget.logic
+
+    # the uCT scan of the elephantom
+    vgiPath = "/Users/pieper/data/elephantom/Bacon Preclinical 60kV 20W 9.4.2014 2nd.vgi"
+    logic.loadVolumeGraphicsFile(vgiPath)
+
+    return
+
+    # the US scan of the elephantom
     dataDir = "/Users/pieper/casehub"
+    dataDir = "/Volumes/encrypted/casehub"
     usPath = os.path.join(dataDir, "20150118 133126-flat-cine.dcm")
     usPath = os.path.join(dataDir, "20150118 133837-elephant.dcm")
     trackerPath = os.path.join(dataDir, "flat-bottom.tsv")
 
-    benchtopNeuroWidget = slicer.modules.BenchtopNeuroWidget
-    logic = benchtopNeuroWidget.logic
 
     logic.createImageAndTransducer()
 
