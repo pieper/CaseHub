@@ -374,6 +374,62 @@ class BenchtopNeuroLogic(ScriptedLoadableModuleLogic):
 
     return volumeNode
 
+
+  def volumeNodeFromVolArray(self, volArray, shape, vtkDataType, dimensions, volName, spacing):
+
+    volArray = volArray.reshape(shape)
+
+    # make a vtkImage data of the vol data
+    image = vtk.vtkImageData()
+    image.SetDimensions(dimensions)
+    image.AllocateScalars(vtk.VTK_FLOAT, 1)
+    imageArray = vtk.util.numpy_support.vtk_to_numpy(image.GetPointData().GetScalars()).reshape(shape)
+    imageArray[:] = volArray
+
+    # make a slicer volume node for the image
+    volumeNode = slicer.vtkMRMLScalarVolumeNode()
+    volumeNode.SetName(volName)
+    volumeNode.SetSpacing(*spacing)
+    volumeNode.SetAndObserveImageData(image)
+    slicer.mrmlScene.AddNode(volumeNode)
+    volumeNode.CreateDefaultDisplayNodes()
+
+    # make this volume visible
+    applicationLogic = slicer.app.applicationLogic()
+    selectionNode = applicationLogic.GetSelectionNode()
+    selectionNode.SetReferenceActiveVolumeID( volumeNode.GetID() )
+    applicationLogic.PropagateVolumeSelection(1)
+
+    return volumeNode
+
+  def loadXTekCTFile(self,xtekctPath, volPath):
+    """Implements a xtekct/vol reader
+    TODO: move this to a scripted IO for slicer if there's any real demand for it.
+    """
+    # load the xtekct file, which is in .ini format
+    # and extract info about vol file
+    xtekct = qt.QSettings(xtekctPath, qt.QSettings.IniFormat)
+
+    # read the vol file into a numpy array
+    # No data type specified, so assume float
+    volArray = numpy.fromfile(volPath,dtype=numpy.dtype('float32'))
+    dimensions = (
+            int(xtekct.value('XTekCT/VoxelsX')),
+            int(xtekct.value('XTekCT/VoxelsY')),
+            int(xtekct.value('XTekCT/VoxelsZ'))
+            )
+    shape = list(dimensions)
+    shape.reverse()
+    spacing = (
+            float(xtekct.value('XTekCT/VoxelSizeX')),
+            float(xtekct.value('XTekCT/VoxelSizeY')),
+            float(xtekct.value('XTekCT/VoxelSizeZ'))
+            )
+    volName = xtekct.value('XTekCT/Name')
+
+    return self.volumeNodeFromVolArray(volArray, shape, vtk.VTK_FLOAT, dimensions, volName, spacing)
+
+
   def loadVolumeGraphicsFile(self,vgiPath):
     """Implements a vgi/vol reader
     TODO: move this to a scripted IO for slicer if there's any real demand for it.
@@ -401,28 +457,7 @@ class BenchtopNeuroLogic(ScriptedLoadableModuleLogic):
 
     volArray = volArray.reshape(shape)
 
-    # make a vtkImage data of the vol data
-    image = vtk.vtkImageData()
-    image.SetDimensions(dimensions)
-    image.AllocateScalars(vtk.VTK_FLOAT, 1)
-    imageArray = vtk.util.numpy_support.vtk_to_numpy(image.GetPointData().GetScalars()).reshape(shape)
-    imageArray[:] = volArray
-
-    # make a slicer volume node for the image
-    volumeNode = slicer.vtkMRMLScalarVolumeNode()
-    volumeNode.SetName(volName)
-    volumeNode.SetSpacing(*spacing)
-    volumeNode.SetAndObserveImageData(image)
-    slicer.mrmlScene.AddNode(volumeNode)
-    volumeNode.CreateDefaultDisplayNodes()
-
-    # make this volume visible
-    applicationLogic = slicer.app.applicationLogic()
-    selectionNode = applicationLogic.GetSelectionNode()
-    selectionNode.SetReferenceActiveVolumeID( volumeNode.GetID() )
-    applicationLogic.PropagateVolumeSelection(1)
-
-    return volumeNode
+    return self.volumeNodeFromVolArray(volArray, shape, vtk.VTK_FLOAT, dimensions, volName, spacing)
 
   def vtkMatrix4x4FromNDI(self,values,method="NDICAPI"):
     """return a new matrix based on the values for the tsv file"""
@@ -519,11 +554,17 @@ class BenchtopNeuroTest(ScriptedLoadableModuleTest):
     benchtopNeuroWidget = slicer.modules.BenchtopNeuroWidget
     logic = benchtopNeuroWidget.logic
 
+    # the uCT scan of bacon
+    xtekctPath = "/Users/pieper/data/elephantom/Elephantom.xtekct"
+    volPath = "/Users/pieper/data/elephantom/Elephantom.vol"
+    logic.loadXTekCTFile(xtekctPath, volPath)
+
+    return
+
     # the uCT scan of the elephantom
     vgiPath = "/Users/pieper/data/elephantom/Bacon Preclinical 60kV 20W 9.4.2014 2nd.vgi"
     logic.loadVolumeGraphicsFile(vgiPath)
 
-    return
 
     # the US scan of the elephantom
     dataDir = "/Users/pieper/casehub"
