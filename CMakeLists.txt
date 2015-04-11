@@ -19,6 +19,7 @@ include(${Slicer_USE_FILE})
 #-----------------------------------------------------------------------------
 # Extension modules
 add_subdirectory(BenchtopNeuro)
+add_subdirectory(ParameterExplorer)
 ## NEXT_MODULE
 
 #-----------------------------------------------------------------------------
