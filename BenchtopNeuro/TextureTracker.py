@@ -1,4 +1,6 @@
+import numpy
 import vtk
+import vtk.util.numpy_support
 import slicer
 
 from slicer.util import VTKObservationMixin
@@ -89,15 +91,19 @@ void main(void) {
   vec4 referenceRGBA = texture2D(referenceTextureUnit, gl_FragCoord.xy / windowSize);
   vec4 sampleRGBA = texture2D(sampleTextureUnit, varyingTextureCoordinates);
 
+
   gl_FragColor = vec4(mix(sampleRGBA.rgb, referenceRGBA.rgb, 0.5), 1.0);
+
+  gl_FragColor = vec4(vec3(0.5) + sampleRGBA.rgb - referenceRGBA.rgb, 1.0);
 }
 """
 
   def __init__(self):
     VTKObservationMixin.__init__(self)
-    self.estimatedCamera = vtk.vtkCamera()
 
-    self.makePlane()
+
+    #self.makePlane()
+    self.makeParameterPlane()
     self.makeRenderWindow()
     # TODO: sample will be current frame and reference will be previous
     referenceTextureUnit = vtk.vtkProperty.VTK_TEXTURE_UNIT_1
@@ -129,10 +135,8 @@ void main(void) {
     self.renderCallback(None, None)
 
   def renderCallback(self, caller, event):
-    print('render')
     if not self.renderWindow.IsDrawable():
       self.removeObserver(self.threeDRenderWindow, vtk.vtkCommand.EndEvent, self.renderCallback)
-      print('remove observer')
       return
 
     self.eye = [0.0, 0.0, 1.0]
@@ -163,6 +167,7 @@ void main(void) {
     openGLproperty.AddShaderVariable("far", 1, self.far)
 
     self.renderWindow.Render()
+    print(self.objective())
 
 
   def makePlane(self):
@@ -180,34 +185,59 @@ void main(void) {
 
   def makeParameterPlane(self):
     # TODO
+    planePoints = [ [-0.5, -0.5, 0.0],
+                         [ 0.5, -0.5, 0.0],
+                         [-0.5,  0.5, 0.0],
+                         [ 0.5,  0.5, 0.0] ]
+    planeTextureCoordinates = [ [0.0, 0.0],
+                                [1.0, 0.0],
+                                [0.0, 1.0],
+                                [1.0, 1.0] ]
+    planePointIDs = [ [0, 1, 3], [0, 3, 2] ]
+
     points = vtk.vtkPoints()
     self.parameterPlane = vtk.vtkPolyData()
     self.parameterPlane.SetPoints(points)
 
+    textureCoordinates = vtk.vtkFloatArray()
+    self.textureCoordinatesName = "TextureCoordinates"
+    textureCoordinates.SetName(self.textureCoordinatesName)
+    textureCoordinates.SetNumberOfComponents(2)
+    self.parameterPlane.GetPointData().AddArray(textureCoordinates)
+
     triangles = vtk.vtkCellArray()
-    self.parameterPlane.SetLines(triangles)
+    self.parameterPlane.SetPolys(triangles)
     trianglesIDArray = triangles.GetData()
     trianglesIDArray.Reset()
-    trianglesIDArray.InsertNextTuple1(0)
 
-    polygons = vtk.vtkCellArray()
-    self.parameterPlane.SetPolys( polygons )
-    idArray = polygons.GetData()
-    idArray.Reset()
-    idArray.InsertNextTuple1(0)
+    for index in xrange(len(planePoints)):
+      points.InsertNextPoint(*(planePoints[index]))
+      textureCoordinates.InsertNextTuple2(*(planeTextureCoordinates[index]))
 
-    for point in path:
-      pointIndex = points.InsertNextPoint(*point)
-      trianglesIDArray.InsertNextTuple1(pointIndex)
-      trianglesIDArray.SetTuple1( 0, trianglesIDArray.GetNumberOfTuples() - 1 )
-      triangles.SetNumberOfCells(1)
+    cellCount = len(planePointIDs)
+    for index in xrange(cellCount):
+      trianglesIDArray.InsertNextTuple1(3)
+      for id_ in planePointIDs[index]:
+        trianglesIDArray.InsertNextTuple1(id_)
+    triangles.SetNumberOfCells(cellCount)
+
+    # create the render-related classes
+    self.planeMapper = vtk.vtkPolyDataMapper()
+    self.planeMapper.SetInputDataObject( self.parameterPlane )
+
+    self.planeActor = vtk.vtkActor()
+    self.planeActor.SetMapper( self.planeMapper )
 
   def makeRenderWindow(self):
     self.renderer= vtk.vtkRenderer()
+    self.renderer.SetBackground(0.5, 0.5, 0.5)
     self.renderer.AddActor( self.planeActor )
 
     self.renderWindow = vtk.vtkRenderWindow()
     self.renderWindow.AddRenderer( self.renderer )
+
+    self.windowToImage = vtk.vtkWindowToImageFilter()
+    self.windowToImage.SetInput(self.renderWindow)
 
   def makeCircleTexture(self):
     """make a texture (2D circle for now, better reference later)"""
@@ -249,5 +279,45 @@ void main(void) {
     self.shaderProgram.GetShaders().AddItem(self.vertexShader)
     self.shaderProgram.GetShaders().AddItem(self.fragmentShader)
     return (self.shaderProgram)
+
+  def objective(self):
+    """Assumes the fragment shader makes a completely gray image
+    at the optimum"""
+    self.windowToImage.Modified()
+    self.windowToImage.Update()
+    self.differenceImage = self.windowToImage.GetOutputDataObject(0)
+    scalars = self.differenceImage.GetPointData().GetScalars()
+    self.differenceArray = vtk.util.numpy_support.vtk_to_numpy(scalars)
+    return(self.differenceArray.mean())
+
+  def gradient(self,f,parameters,window=1.):
+    """Evaluate the gradient with respect to the parameters (central difference)"""
+    parameterCount = len(pt.parameters)
+    gradient = numpy.zeros(parameterCount)
+    oneOver2Window = 1. / (2*window)
+    for index in xrange(parameterCount):
+      deltaP = (index,self.gradientWindow)
+      metricPlus = self.f(deltaP)
+      deltaP = (index,-self.gradientWindow)
+      metricMinus = self.f(deltaP)
+      gradient[index] = (metricPlus - metricMinus) * oneOver2Window
+    #gradient = gradient / numpy.linalg.norm(gradient)
+    return gradient
+
+  def optimize(self, iterations=100, stepSize=0.1, gradientWindow=1.):
+    """Experiment with CPU camera pose estimation"""
+    cameraNode = slicer.util.getNode("*amera*")
+    self.threeDCamera = cameraNode.GetCamera()
+    eye = self.threeDCamera.GetPosition()
+    target = self.threeDCamera.GetFocalPoint()
+    up = self.threeDCamera.GetViewUp()
+
+    parameters = eye
+    parameters.extend(target)
+
+
+
+
+
 
 tt = TextureTracker()
