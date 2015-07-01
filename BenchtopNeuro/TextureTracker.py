@@ -53,12 +53,17 @@ mat4 lookAt (vec3 eye, vec3 target, vec3 up) {
 uniform vec3 eye, target, up;
 uniform float fovY, aspect, near, far;
 attribute vec2 textureCoordinates;
+attribute vec3 cameraTranslation;
+attribute vec3 cameraRotation;
 varying vec2 varyingTextureCoordinates;
 varying vec2 varyingReferencePosition;
 
 void main(void) {
 
-  mat4 viewMatrix = lookAt(eye, target, up);
+  vec3 translatedEye = eye + cameraTranslation;
+  vec3 translatedTarget = target + cameraRotation;
+  mat4 viewMatrix = lookAt(translatedEye, translatedTarget, up);
+  //mat4 viewMatrix = lookAt(eye, target, up);
   mat4 perspectiveMatrix = perspective(radians(fovY), aspect, near, far);
 
   vec4 projectedPosition = perspectiveMatrix * viewMatrix * gl_Vertex;
@@ -122,6 +127,10 @@ void main(void) {
 
     self.planeMapper.MapDataArrayToVertexAttribute("textureCoordinates",
                                                     self.textureCoordinatesName, 0, -1)
+    self.planeMapper.MapDataArrayToVertexAttribute("cameraTranslation",
+                                                    "CameraTranslation", 0, -1)
+    self.planeMapper.MapDataArrayToVertexAttribute("cameraRotation",
+                                                    "CameraRotation", 0, -1)
 
     #TODO: coordinates should be made a vertex buffer
 
@@ -183,8 +192,8 @@ void main(void) {
     self.planeActor = vtk.vtkActor()
     self.planeActor.SetMapper( self.planeMapper )
 
-  def makeParameterPlane(self):
-    # TODO
+  def makeParameterPlane(self,parameterStep=100):
+    # TODO - add space exploration parameters
     planePoints = [ [-0.5, -0.5, 0.0],
                          [ 0.5, -0.5, 0.0],
                          [-0.5,  0.5, 0.0],
@@ -205,20 +214,48 @@ void main(void) {
     textureCoordinates.SetNumberOfComponents(2)
     self.parameterPlane.GetPointData().AddArray(textureCoordinates)
 
+    cameraTranslation = vtk.vtkFloatArray()
+    cameraTranslation.SetName("CameraTranslation")
+    cameraTranslation.SetNumberOfComponents(3)
+    self.parameterPlane.GetPointData().AddArray(cameraTranslation)
+
+    cameraRotation = vtk.vtkFloatArray()
+    cameraRotation.SetName("CameraRotation")
+    cameraRotation.SetNumberOfComponents(3)
+    self.parameterPlane.GetPointData().AddArray(cameraRotation)
+
     triangles = vtk.vtkCellArray()
     self.parameterPlane.SetPolys(triangles)
     trianglesIDArray = triangles.GetData()
     trianglesIDArray.Reset()
 
-    for index in xrange(len(planePoints)):
-      points.InsertNextPoint(*(planePoints[index]))
-      textureCoordinates.InsertNextTuple2(*(planeTextureCoordinates[index]))
+    parameterCount = 6
+    parameterSteps = 5
+    parameterOffset = parameterSteps / 2
+    parameterSetCount = parameterSteps**parameterCount
+    parameterArray = numpy.zeros( shape=(parameterSetCount, parameterCount) )
+    for parameterIndex in xrange(parameterCount):
+      parameterStride = parameterSteps**parameterIndex
+      for parameterArrayIndex in xrange(len(parameterArray)):
+        value = (parameterArrayIndex / parameterStride) % parameterSteps - parameterOffset
+        parameterArray[parameterArrayIndex][parameterIndex] = value
 
-    cellCount = len(planePointIDs)
-    for index in xrange(cellCount):
-      trianglesIDArray.InsertNextTuple1(3)
-      for id_ in planePointIDs[index]:
-        trianglesIDArray.InsertNextTuple1(id_)
+    for parameterSet in parameterArray:
+      translation = parameterSet[:3]
+      rotation = parameterSet[3:]
+      pointIDBase = points.GetNumberOfPoints()
+      for index in xrange(len(planePoints)):
+        points.InsertNextPoint(*(planePoints[index]))
+        textureCoordinates.InsertNextTuple2(*(planeTextureCoordinates[index]))
+        cameraTranslation.InsertNextTuple3(*translation)
+        cameraRotation.InsertNextTuple3(*rotation)
+
+      for pointIDs in planePointIDs:
+        trianglesIDArray.InsertNextTuple1(3)
+        for pointID in pointIDs:
+          trianglesIDArray.InsertNextTuple1(pointIDBase + pointID)
+
+    cellCount = len(planePointIDs) * parameterSetCount
     triangles.SetNumberOfCells(cellCount)
 
     # create the render-related classes
