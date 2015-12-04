@@ -6,7 +6,7 @@ import slicer
 from slicer.util import VTKObservationMixin
 
 comment = """
-execfile('/Users/pieper/slicer4/latest/CaseHub/BenchtopNeuro/TextureTracker.py')
+execfile('/Users/pieper/slicer4/latest/CaseHub/BenchtopNeuro/Experiments/TextureTracker.py')
 """
 
 class TextureTracker(VTKObservationMixin):
